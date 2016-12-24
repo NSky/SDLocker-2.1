@@ -2,19 +2,17 @@
  *  sdlocker2      lock/unlock an SD card, uses ATmega328P
  */
 
-#include  <stdint.h>
 #include  <stdio.h>
-#include  <stdlib.h>
 #include  <string.h>
+#include  <ctype.h>
+
+#include  <util/delay.h>
+
 #include  <avr/io.h>
 #include  <avr/pgmspace.h>
 #include  <avr/interrupt.h>
-#include  <inttypes.h>
-#include  <ctype.h>
-#include  <util/delay.h>
 
-
-#include  "..\include\uart.h"
+#include "uart.h"
 
 
 #ifndef  FALSE
@@ -99,6 +97,7 @@
 #define  SW_PWD_UNLOCK	7
 #define  SW_PWD_CHECK	8
 #define  SW_LOCK_CHECK	9
+#define  SW_ERASE		10
 
 
 
@@ -132,7 +131,7 @@
  */
 #define  LOCK_LED_PORT	PORTD
 #define  LOCK_LED_DDR	DDRD
-#define  LOCK_LED_BIT	2			
+#define  LOCK_LED_BIT	2
 #define  LOCK_LED_MASK	(1<<LOCK_LED_BIT)
 #define  LOCK_LED_OFF	(LOCK_LED_PORT=LOCK_LED_PORT&~LOCK_LED_MASK)
 #define  LOCK_LED_ON	(LOCK_LED_PORT=LOCK_LED_PORT|LOCK_LED_MASK)
@@ -204,7 +203,7 @@ uint8_t							cardstatus[2];		// updated by ReadLockStatus
 uint8_t							pwd[16];
 uint8_t							pwd_len;
 
-char							GlobalPWDStr[16] PROGMEM = 
+const char						GlobalPWDStr[16] PROGMEM =
 								{'F', 'o', 'u', 'r', 't', 'h', ' ', 'A',
 								 'm', 'e', 'n', 'd', 'm', 'e', 'n', 't'};
 #define  GLOBAL_PWD_LEN			(sizeof(GlobalPWDStr))
@@ -235,6 +234,7 @@ static void						ShowCardStatus(void);
 static void						ShowLockState(void);
 static void						LoadGlobalPWD(void);
 static int8_t					ModifyPWD(uint8_t  mask);
+static int8_t					ForceErase(void);
 
 static  int8_t  				sd_send_command(uint8_t  command, uint32_t  arg);
 static  int8_t					sd_wait_for_data(void);
@@ -276,13 +276,21 @@ int  main(void)
 /*
  *  Set up the UART, then connect to standard I/O streams.
  */
-	UARTInit(BAUDREG, BAUDREG);
-	stdout = &uart0out;						// hook printf() into UART0
-	stdin = &uart0in;						// hook getchar() into UART0
-	stderr = &uart0out;						// hook printf() into UART0
+
+    uart_init();
+    stdout = &uart_output;
+    stdin  = &uart_input;
+	stderr = &uart_output;
 	sei();									// let the UART ISR work
 
-	printf_P(PSTR("\r\n\r\nsdlocker2\r\n"));
+	printf_P(PSTR("\r\nSDLocker2.1\r\n"));
+	printf_P(PSTR("? - SD info\r\n"));
+	printf_P(PSTR("u - Write Unlock\r\n"));
+	printf_P(PSTR("l - Write Lock\r\n"));
+	printf_P(PSTR("p - Password Unlock\r\n"));
+	printf_P(PSTR("P - Password Lock\r\n"));
+	printf_P(PSTR("E - Erase\r\n"));
+	printf_P(PSTR("r - Read\r\n"));
 
 	GenerateCRCTable();
 
@@ -321,7 +329,7 @@ void  BlinkLED(uint32_t  pattern)
 static void GenerateCRCTable()
 {
     int i, j;
- 
+
     // generate a table value for all 256 possible byte values
     for (i = 0; i < 256; i++)
     {
@@ -370,7 +378,7 @@ static void  ProcessSwitch(void)
 		if (sw == SW_INFO)
 		{
 			LOCK_LED_OFF;
-			UNLOCK_LED_OFF;	
+			UNLOCK_LED_OFF;
 			printf_P(PSTR("\r\nCard type %d"), sdtype);
 			r = ExamineSD();
 			if (r == SDCARD_OK)
@@ -401,7 +409,7 @@ static void  ProcessSwitch(void)
 		else if (sw == SW_LOCK)
 		{
 			LOCK_LED_OFF;
-			UNLOCK_LED_OFF;	
+			UNLOCK_LED_OFF;
 			printf_P(PSTR("\r\nSetting temporary lock on SD card..."));
 			r = ReadCSD();
 			if (r == SDCARD_OK)
@@ -437,7 +445,7 @@ static void  ProcessSwitch(void)
 		else if (sw == SW_UNLOCK)
 		{
 			LOCK_LED_OFF;
-			UNLOCK_LED_OFF;	
+			UNLOCK_LED_OFF;
 			printf_P(PSTR("\r\nClearing temporary lock on SD card..."));
 			r = ReadCSD();
 			if (r == SDCARD_OK)
@@ -479,10 +487,51 @@ static void  ProcessSwitch(void)
 				ShowBlock();
 			}
 		}
+		else if (sw == SW_ERASE)
+		{
+            printf_P(PSTR("\r\nTrying to ERASE SD CARD..."));
+			LOCK_LED_OFF;
+			UNLOCK_LED_OFF;
+			ReadCardStatus();
+			if (cardstatus[1] & 0x01)		// if card is locked...
+			{
+				r = ForceErase();
+
+                printf_P(PSTR("please wait..."));
+                _delay_ms(1000);
+
+				ReadCardStatus();
+
+				if (cardstatus[1] & 0x01)	// if card is still locked...
+				{
+					r = ForceErase();		// erasing failed, try one more time
+
+                    printf_P(PSTR("please wait..."));
+                    _delay_ms(1000);
+
+					ReadCardStatus();
+				}
+				if (cardstatus[1] & 0x01)	// if card is still locked...
+				{
+					printf_P(PSTR("failed!  Card is still locked."));
+					LOCK_LED_ON;
+				}
+				else
+				{
+					printf_P(PSTR("done."));
+					UNLOCK_LED_ON;
+				}
+			}
+			else							// silly person, card is already unlocked
+			{
+                printf_P(PSTR("the card is not locked"));
+				UNLOCK_LED_ON;
+			}
+		}
 		else if (sw == SW_PWD_UNLOCK)
 		{
 			LOCK_LED_OFF;
-			UNLOCK_LED_OFF;	
+			UNLOCK_LED_OFF;
 			ReadCardStatus();
 			if (cardstatus[1] & 0x01)		// if card is locked...
 			{
@@ -514,7 +563,7 @@ static void  ProcessSwitch(void)
 		else if (sw == SW_PWD_LOCK)
 		{
 			LOCK_LED_OFF;
-			UNLOCK_LED_OFF;	
+			UNLOCK_LED_OFF;
 			ReadCardStatus();
 			if ((cardstatus[1] & 0x01) == 0)	// if card is unlocked...
 			{
@@ -545,7 +594,7 @@ static void  ProcessSwitch(void)
 		{
 			LOCK_LED_OFF;
 			UNLOCK_LED_OFF;
-			printf_P(PSTR("\r\nChecking PWD state..."));	
+			printf_P(PSTR("\r\nChecking PWD state..."));
 			ReadCardStatus();
 			if ((cardstatus[1] & 0x01) == 0)	// if card is unlocked...
 			{
@@ -558,7 +607,7 @@ static void  ProcessSwitch(void)
 		}
 		else if (sw == SW_LOCK_CHECK)
 		{
-			printf_P(PSTR("\r\nChecking temp-lock state..."));							
+			printf_P(PSTR("\r\nChecking temp-lock state..."));
 			ReadOCR();
 			r = ReadCSD();
 			if (r == SDCARD_OK)
@@ -569,8 +618,8 @@ static void  ProcessSwitch(void)
 			{
 				BlinkLED(PATTERN_NO_DETECT);
 			}
-		}				
-	}	
+		}
+	}
 	prev_sw = sw;
 }
 
@@ -580,19 +629,21 @@ static uint8_t  ReadSwitch(void)
 {
 	uint8_t						r;
 	static uint8_t				prev_sw = SW_ALL_MASK;
+	static uint16_t             sw_hold_counter = 0;
 	uint8_t						sw;
 
 	_delay_ms(50);
 	r = SW_NONE;
-	if (kbhit())
+	if (uart_pending_data())
 	{
-		r = getche();
+		r = getchar();
 		if      (r == 'u')  r = SW_UNLOCK;
 		else if (r == 'l')  r = SW_LOCK;
 		else if (r == '?')  r = SW_INFO;
 		else if (r == 'r')  r = SW_READBLK;
 		else if (r == 'p')  r = SW_PWD_UNLOCK;
 		else if (r == 'P')  r = SW_PWD_LOCK;
+		else if (r == 'E')  r = SW_ERASE;
 		else				r = SW_NONE;
 	}
 
@@ -603,17 +654,26 @@ static uint8_t  ReadSwitch(void)
 		{
 			if (((sw & SW_PWD_MASK) == 0) && ((prev_sw & SW_PWD_MASK) == 0))	// if PWD switch is down both scans...
 			{
-				if (((sw & SW_LOCK_MASK) == 0) && (prev_sw & SW_LOCK_MASK))	// if LOCK switch was just pressed...
+                sw_hold_counter++;
+                if(sw_hold_counter > 0xB0) // PWD hold (about 10 sec timeout)
+                {
+                    sw_hold_counter = 0;
+                    r = SW_ERASE;
+                }
+				else if (((sw & SW_LOCK_MASK) == 0) && (prev_sw & SW_LOCK_MASK))	// if LOCK switch was just pressed...
 				{
+                    sw_hold_counter = 0;
 					r = SW_PWD_LOCK;
 				}
 				else if (((sw & SW_UNLOCK_MASK) == 0) && (prev_sw & SW_UNLOCK_MASK))	// if UNLOCK switch was just pressed...
 				{
+                    sw_hold_counter = 0;
 					r = SW_PWD_UNLOCK;
 				}
 			}
 			else if (((sw & SW_PWD_MASK) == 0) && (prev_sw & SW_PWD_MASK))		// if PWD switch was just pressed...
 			{
+                sw_hold_counter = 0;
 				if ((sw & (SW_LOCK_MASK | SW_UNLOCK_MASK)) == (SW_LOCK_MASK | SW_UNLOCK_MASK))	// if other switches are open...
 				{
 					r = SW_PWD_CHECK;
@@ -621,6 +681,7 @@ static uint8_t  ReadSwitch(void)
 			}
 			else if ((sw & SW_PWD_MASK) == SW_PWD_MASK)					// if PWD switch is now open...
 			{
+                sw_hold_counter = 0;
 				if ((sw & (SW_LOCK_MASK | SW_UNLOCK_MASK)) == SW_UNLOCK_MASK)	// if LOCK switch is pressed...
 				{
 					if (prev_sw & SW_LOCK_MASK)							// but LOCK switch wasn't pressed before...
@@ -639,6 +700,7 @@ static uint8_t  ReadSwitch(void)
 		}
 		else														// no switches are down...
 		{
+            sw_hold_counter = 0;
 			if ((prev_sw & SW_PWD_MASK) == 0)						// if PWD switch was just released...
 			{
 				r = SW_LOCK_CHECK;
@@ -647,7 +709,7 @@ static uint8_t  ReadSwitch(void)
 		prev_sw = sw;												// record for next time
 	}
 
-	return  r;	
+	return  r;
 }
 
 
@@ -666,7 +728,7 @@ static void  ShowLockState(void)
 		UNLOCK_LED_ON;
 	}
 }
-	
+
 
 
 /*
@@ -703,7 +765,7 @@ static  unsigned char  xchg(unsigned char  c)
 
 
 
-	
+
 
 static int8_t  SDInit(void)
 {
@@ -800,7 +862,7 @@ static  void  ShowBlock(void)
 }
 
 
-	
+
 static int8_t  ExamineSD(void)
 {
 	int8_t			response;
@@ -992,7 +1054,7 @@ static int8_t  ReadBlock(uint32_t  blocknum, uint8_t  *buffer)
     xchg(0xff);                		 	// ignore CRC
     xchg(0xff);                		 	// ignore CRC
 
-    return  SDCARD_OK;					// return success       
+    return  SDCARD_OK;					// return success
 }
 
 
@@ -1035,6 +1097,24 @@ static int8_t  ModifyPWD(uint8_t  mask)
 }
 
 
+static int8_t  ForceErase(void)
+{
+	int8_t	r;
+
+	sd_send_command(SD_SET_BLK_LEN, 1);		// always set block length (CMD6) to 512 bytes
+
+	r = sd_send_command(SD_LOCK_UNLOCK, 0);
+	if (r != 0)
+	{
+		return  SDCARD_RWFAIL;
+	}
+	xchg(0xfe);							// send data token marking start of data block
+
+	xchg(MASK_ERASE);					// always start with required command
+
+	return  SDCARD_OK;			// return success
+}
+
 
 static void  ShowErrorCode(int8_t  status)
 {
@@ -1068,8 +1148,14 @@ static void  ShowCardStatus(void)
 {
 	ReadCardStatus();
 	printf_P(PSTR("\r\nPassword status: "));
-	if ((cardstatus[1] & 0x01) ==  0)  printf_P(PSTR("un"));
-	printf_P(PSTR("locked"));
+	if ((cardstatus[1] & 0x01) ==  0) {
+        printf_P(PSTR("unlocked"));
+        UNLOCK_LED_ON;
+    }
+    else {
+        printf_P(PSTR("locked"));
+        LOCK_LED_ON;
+	}
 }
 
 
@@ -1135,7 +1221,7 @@ static  int8_t  sd_send_command(uint8_t  command, uint32_t  arg)
 	crc = 0x01;							// good for most cases
 	if (command == SD_GO_IDLE)  crc = 0x95;			// this will be good enough for most commands
 	if (command == SD_SEND_IF_COND)  crc = 0x87;	// special case, have to use different CRC
-    xchg(crc);         					// send final byte                          
+    xchg(crc);         					// send final byte
 
 	for (i=0; i<10; i++)				// loop until timeout or response
 	{
