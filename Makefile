@@ -13,7 +13,7 @@ MCU=atmega328p
 PROGRAMMER_MCU=m328p
 
 # Name of our project (use a single word, e.g. ‘myproject’)
-PROJECTNAME=sdlocker21
+PROJECTNAME=SDLocker2.1
 
 # Source files
 # List C/C++/Assembly source files:
@@ -21,7 +21,7 @@ PROJECTNAME=sdlocker21
 # Use .cc, .cpp or .C suffix for C++ files, use .S
 # (NOT .s !!!) for assembly source code files.
 #PRJSRC=main.c myclass.cpp lowlevelstuff.S
-PRJSRC=sdlocker21.c
+PRJSRC=sdlocker2.c uart.c
 
 #####      Programmer specific details #####
 # programmer id–check the avrdude for complete list of available opts.
@@ -29,16 +29,12 @@ PRJSRC=sdlocker21.c
 # one of the valid “-c PROGRAMMER-ID” values described in the avrdude info page.
 AVRDUDE_PROGRAMMERID=avrftdi
 
-# port–serial or parallel port to which your
-# hardware programmer is attached
-AVRDUDE_PORT=/dev/ttyUSB0
-
 # F_CPU - Target AVR clock rate in Hertz
 F_CPU      = 8000000
 
 # OBJECTS - The object files created from your source files. This list is
 #                usually the same as the list of source files with suffix ".o".
-OBJECTS    = sdlocker21.o
+OBJECTS    = sdlocker2.o uart.o
 
 # FUSES - Parameters for avrdude to flash the fuses appropriately.
 FUSES      = -U lfuse:w:0xe2:m -U hfuse:w:0xd9:m -U efuse:w:0xff:m
